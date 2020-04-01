@@ -19,7 +19,7 @@ class Hparams:
     # dictionary(Словарь)
     dicdir = "g2p/en.dic"
     # Save Model( Сохранённая модель)
-    logdir = "g2p/log/"
+    logdir = "/home/vogorjachko/g2p/log"
     
 def load_dict(path_dict):
     phon = []

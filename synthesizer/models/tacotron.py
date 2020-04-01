@@ -11,6 +11,7 @@ from synthesizer.models.attention import LocationSensitiveAttention
 import numpy as np
 
 
+
 def split_func(x, split_pos):
     rst = []
     start = 0
@@ -27,7 +28,68 @@ class Tacotron():
     
     def __init__(self, hparams):
         self._hparams = hparams
-    
+        
+    def build_ref_encoder(self, inputs, is_training):
+        # inputs = [batch_size, seq_len//r, hp.n_mels*hp.r]
+        # outputs = [batch_size, hp.ref_enc_gru_size]
+        hp = self._hparams
+        # Restore shape -> [batch_size, seq_len, hp.n_mels]
+        inputs = tf.reshape(inputs, [tf.shape(inputs)[0], -1, hp.num_mels])
+
+        # Expand dims -> [batch_size, seq_len, hp.n_mels, 1]
+        inputs = tf.expand_dims(inputs, axis=-1)
+
+        # Six Conv2D layers follow by bn and relu activation
+        # conv2d_result = [batch_size, seq_len//2^6, hp.n_mels//2^6]
+        hiddens = [inputs]
+
+        for i in range(len(self._hparams.ref_enc_filters)):
+            with tf.variable_scope('conv2d_{}'.format(i+1)):
+                tmp_hiddens = conv2d(
+                                hiddens[i], filters=self._hparams.ref_enc_filters[i],
+                                size=self._hparams.ref_enc_size, strides=self._hparams.ref_enc_strides
+                            )
+                tmp_hiddens = bn(tmp_hiddens, is_training=is_training, activation_fn=tf.nn.relu)
+                hiddens.append(tmp_hiddens)
+        conv2d_result = hiddens[-1]
+        target_dim = conv2d_result.get_shape().as_list()[2] * conv2d_result.get_shape().as_list()[3]
+        shape = tf.shape(conv2d_result)
+        conv2d_result = tf.reshape(conv2d_result, [shape[0], shape[1], target_dim])
+        conv2d_result.set_shape([None, None, target_dim])
+
+        # Uni-dir GRU, ref_emb = the last state of gru
+        # ref_emb = [batch_size, hp.ref_enc_gru_size]
+        _, ref_emb = gru(conv2d_result, bidirection=False, num_units=self._hparams.ref_enc_gru_size, hp=self._hparams)
+
+        return ref_emb
+
+    def build_STL(self, inputs):
+        # inputs = [batch_size, hp.ref_enc_gru_size]
+        # outputs = [batch_size, hp.token_emb_size]
+
+        with tf.variable_scope('GST_emb'):
+            GST = tf.get_variable(
+                    'global_style_tokens',
+                    [self._hparams.token_num, self._hparams.token_emb_size // self._hparams.num_heads],
+                    dtype=tf.float32,
+                    initializer=tf.truncated_normal_initializer(stddev=0.5)
+                  )
+            # we found that applying a tanh activation to GSTs
+            # before applying attention led to greater token diversity.
+            GST = tf.nn.tanh(GST)
+        with tf.variable_scope('multihead_attn'):
+            style_emb = multi_head_attention(
+                        # shape = [batch_size, 1, hp.ref_enc_gru_size]
+                        tf.expand_dims(inputs, axis=1),
+                        # shape = [batch_size, hp.token_num, hp.token_emb_size//hp.num_heads]
+                        tf.tile(tf.expand_dims(GST, axis=0), [tf.shape(inputs)[0],1,1]),
+                        hp=self._hparams,
+                        num_heads=self._hparams.num_heads,
+                        num_units=self._hparams.multihead_attn_num_unit,
+                        attention_type=self._hparams.style_att_type
+                    )
+        return style_emb, GST
+
     def initialize(self, inputs, input_lengths, embed_targets, mel_targets=None, 
                    stop_token_targets=None, linear_targets=None, targets_lengths=None, gta=False,
                    global_step=None, is_training=False, is_evaluating=False, split_infos=None):
@@ -159,6 +221,19 @@ class Tacotron():
                     
                     ##############
                     
+                    ### ADD GST ###
+                    
+                    # Append the style embedding to the encoder output at each timestep
+                                        
+                    ref_emb = self.build_ref_encoder(mel_targets, is_training)
+
+                    # style_emb = [batch, hp.token_emb_size]
+                    style_emb, self.GST = self.build_STL(ref_emb)
+                    
+                    seq_len = tf.shape(encoder_cond_outputs)[1]
+                    encoder_cond_outputs += tf.tile(tf.expand_dims(style_emb, axis=1), [1, seq_len, 3])
+                    
+                    ##############
                     
                     # Decoder Parts
                     # Attention Decoder Prenet

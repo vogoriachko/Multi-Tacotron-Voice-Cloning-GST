@@ -310,6 +310,20 @@ hparams = HParams(
     # Determines the teacher forcing ratio decay slope. Relevant if mode="scheduled"
     tacotron_teacher_forcing_decay_alpha=0.,
     # teacher forcing ratio decay rate. Relevant if mode="scheduled"
+    
+    ## reference encoder
+    ref_enc_filters=[32, 32, 64, 64, 128, 128],
+    ref_enc_size=[3,3],
+    ref_enc_strides=[2,2],
+    ref_enc_gru_size=128,
+
+    ## style token layer
+    token_num=10,
+    token_emb_size=256,
+    num_heads=8,
+    multihead_attn_num_unit=128,
+    style_att_type='mlp_attention',
+    attn_normalize=True,
     ###########################################################################################################################################
  
     # Tacotron-2 integration parameters
